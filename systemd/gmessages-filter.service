@@ -1,0 +1,14 @@
+[Unit]
+Description=Google Messages Web Auto-Filter Local Sync & Audit Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/millinr/.local/share/gmessages-filter/server.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

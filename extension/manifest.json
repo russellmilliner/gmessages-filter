@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Google Messages Auto-Filter",
+  "version": "1.9.0",
+  "description": "Monitors Google Messages Web and automatically deletes, blocks/reports spam, or archives messages matching caller numbers, message patterns, age rules, and multi-category OpenRouter Jev AI content evaluation (Political, Religion, etc.) from non-contacts.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://messages.google.com/*",
+    "http://127.0.0.1:8768/*"
+  ],
+  "background": {
+    "service_worker": "sw.js",
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://messages.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "gmessages-filter@local.millinr",
+      "strict_min_version": "109.0"
+    }
+  }
+}

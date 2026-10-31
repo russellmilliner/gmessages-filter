@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""
+gmessages-filter CLI
+--------------------
+Manage Google Messages Web auto-filter rules (matching message text/regex,
+caller number, older-than age, or multi-category OpenRouter Jev AI content
+evaluation in a single call, with per-rule/per-category actions: delete,
+block_spam, archive), settings, and audit logs.
+"""
+
+import argparse
+import json
+import sys
+import urllib.error
+import urllib.request
+
+BASE_URL = "http://127.0.0.1:8768"
+
+
+def api_req(path: str, method: str = "GET", payload: dict = None, timeout: int = 30) -> dict:
+    url = f"{BASE_URL}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def normalize_action_arg(
+    action_str: str,
+    block_spam_flag=None,
+    archive_flag=None,
+    delete_flag=None,
+    default_act: str = "delete",
+) -> str:
+    if action_str:
+        return action_str.replace("-", "_")
+    if block_spam_flag is True or block_spam_flag == "on":
+        return "block_spam"
+    if archive_flag is True or archive_flag == "on":
+        return "archive"
+    if delete_flag is True or delete_flag == "on":
+        return "delete"
+    return default_act
+
+
+def format_rule_desc(p: dict) -> str:
+    num = (p.get("number") or "").strip()
+    pat = (p.get("pattern") or "").strip()
+    older = (p.get("older_than") or "").strip()
+    kind = "REGEX" if p.get("is_regex") else "STRING"
+    cs = "case-sensitive" if p.get("case_sensitive") else "case-insensitive"
+    parts = []
+    if num:
+        parts.append(f"number={num!r}")
+    if pat:
+        parts.append(f"message={pat!r} ({kind}, {cs})")
+    if older:
+        parts.append(f"older_than={older!r}")
+    return " + ".join(parts) if parts else "(empty)"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Manage Google Messages Web auto-filter rules and multi-category OpenRouter Jev AI filter."
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", help="Show current filter status, OpenRouter Jev AI categories, and active rules")
+    sub.add_parser("list", help="List configured rules and AI categories")
+
+    # AI Category commands
+    sub.add_parser("ai-list", help="List configured OpenRouter Jev AI filter categories and descriptions")
+
+    p_ai_add = sub.add_parser("ai-add", help="Add or update an OpenRouter Jev AI filter category (e.g. Religion, Political, Real Estate)")
+    p_ai_add.add_argument("name", help="Category name (e.g. 'Religion', 'Political', 'Real Estate', 'login codes', 'food orders')")
+    p_ai_add.add_argument("-d", "--description", default="", help="Optional custom description for Jev classification prompt")
+    p_ai_add.add_argument(
+        "-o",
+        "--older-than",
+        default="",
+        help="Only apply action when message is older than X (e.g. '1d', '24h', '7d')",
+    )
+    p_ai_add.add_argument(
+        "--action",
+        choices=["delete", "block-spam", "block_spam", "archive"],
+        help="Action when matched: block-spam, archive, or delete (default: block_spam)",
+    )
+    p_ai_add.add_argument("--block-spam", action="store_true", help="Shortcut for --action block-spam")
+    p_ai_add.add_argument("--archive", action="store_true", help="Shortcut for --action archive")
+    p_ai_add.add_argument("--delete", action="store_true", help="Shortcut for --action delete")
+
+    p_ai_upd = sub.add_parser("ai-update", help="Update an existing AI category's action, older-than age, description, or enabled state")
+    p_ai_upd.add_argument("target", help="Category ID (e.g. cat-religion) or name (e.g. Religion)")
+    p_ai_upd.add_argument("-d", "--description", help="Set/update category prompt description")
+    p_ai_upd.add_argument(
+        "-o",
+        "--older-than",
+        help="Set/update older-than age requirement (e.g. '1d', '24h', or '0' to clear)",
+    )
+    p_ai_upd.add_argument(
+        "--action",
+        choices=["delete", "block-spam", "block_spam", "archive"],
+        help="Set category action: block_spam, archive, or delete",
+    )
+    p_ai_upd.add_argument("--block-spam", action="store_true", help="Shortcut for --action block-spam")
+    p_ai_upd.add_argument("--archive", action="store_true", help="Shortcut for --action archive")
+    p_ai_upd.add_argument("--delete", action="store_true", help="Shortcut for --action delete")
+    p_ai_upd.add_argument("--enable", action="store_true", help="Enable this AI category")
+    p_ai_upd.add_argument("--disable", action="store_true", help="Disable this AI category")
+
+    p_ai_rm = sub.add_parser("ai-remove", help="Remove an AI category by ID or name")
+    p_ai_rm.add_argument("target", help="Category ID or name to remove")
+
+    # VIP Contact Desktop Alert commands
+    sub.add_parser("vip-list", help="List VIP contacts that trigger a center-of-primary-desktop alert when Google Messages is not visible")
+
+    p_vip_add = sub.add_parser("vip-add", help="Add a VIP contact for center-of-primary-desktop alerts")
+    p_vip_add.add_argument("name", help="Contact display name (e.g. 'Michelle Milliner')")
+
+    p_vip_rm = sub.add_parser("vip-remove", help="Remove a VIP contact from center-of-primary-desktop alerts")
+    p_vip_rm.add_argument("name", help="Contact display name to remove")
+
+    p_vip_test = sub.add_parser("vip-test", help="Test the center-of-primary-desktop alert popup")
+    p_vip_test.add_argument("-s", "--sender", default="Michelle Milliner", help="Sender display name (default: Michelle Milliner)")
+    p_vip_test.add_argument("--respect-visibility", action="store_true", help="Only show alert if Google Messages window is not visible OR conversation is not active")
+    p_vip_test.add_argument("--active-conversation", action="store_true", help="Simulate that the conversation IS currently the active conversation")
+    p_vip_test.add_argument("--simulate-screenshare", action="store_true", help="Simulate active screensharing on the primary display so alert routes to secondary display")
+
+    # Static pattern rules
+    p_add = sub.add_parser("add", help="Add a rule matching message text, caller number, older-than age, or combined")
+    p_add.add_argument("pattern", nargs="?", default="", help="Optional message substring or regex to match")
+    p_add.add_argument("-m", "--message", default="", help="Message substring or regex to match")
+    p_add.add_argument(
+        "-n",
+        "--number",
+        default="",
+        help="Caller number / area code / short code to match (plain digits/string, no regex needed)",
+    )
+    p_add.add_argument(
+        "-o",
+        "--older-than",
+        default="",
+        help="Only match messages older than X (e.g. '7' or '7d' for 7 days, '24h' for 24 hours, '2w' for 2 weeks)",
+    )
+    p_add.add_argument("--regex", action="store_true", help="Interpret message pattern as a regular expression")
+    p_add.add_argument("--case-sensitive", action="store_true", help="Make message matching case-sensitive")
+    p_add.add_argument(
+        "--action",
+        choices=["delete", "block-spam", "block_spam", "archive"],
+        help="Action to take when matched: delete, block-spam, or archive (default: delete)",
+    )
+    p_add.add_argument("--block-spam", action="store_true", help="Shortcut for --action block-spam")
+    p_add.add_argument("--archive", action="store_true", help="Shortcut for --action archive")
+
+    p_upd = sub.add_parser("update", help="Update an existing rule's action, number, message pattern, or older-than age")
+    p_upd.add_argument("target", help="Rule ID, message pattern, or caller number to update")
+    p_upd.add_argument("-m", "--message", help="Set/update message pattern on this rule")
+    p_upd.add_argument("-n", "--number", help="Set/update caller number on this rule")
+    p_upd.add_argument(
+        "-o",
+        "--older-than",
+        help="Set/update older-than age requirement (e.g. '7d', '12h', or '0' to clear)",
+    )
+    p_upd.add_argument(
+        "--action",
+        choices=["delete", "block-spam", "block_spam", "archive"],
+        help="Set per-rule action: delete, block-spam, or archive",
+    )
+    p_upd.add_argument("--block-spam", choices=["on", "off"], help="Enable or disable block_spam on this rule")
+    p_upd.add_argument("--archive", choices=["on", "off"], help="Enable or disable archive on this rule")
+
+    p_set_act = sub.add_parser("set-action", help="Shortcut to set a rule's action (delete, block_spam, archive)")
+    p_set_act.add_argument("target", help="Rule ID, message pattern, or caller number")
+    p_set_act.add_argument("action", choices=["delete", "block-spam", "block_spam", "archive"])
+
+    p_set_old = sub.add_parser(
+        "set-older-than", help="Shortcut to set or clear a rule's older-than threshold (e.g. 7d, 12h, 0)"
+    )
+    p_set_old.add_argument("target", help="Rule ID, message pattern, or caller number")
+    p_set_old.add_argument(
+        "older_than", help="Age threshold (e.g. '7' or '7d', '24h', '2w', or '0'/'off' to remove age limit)"
+    )
+
+    p_rm = sub.add_parser("remove", help="Remove a rule by ID, message pattern, or caller number")
+    p_rm.add_argument("target", help="Rule ID, message pattern, or caller number to remove")
+
+    p_mode = sub.add_parser("mode", help="Toggle global filter and OpenRouter Jev AI filter settings")
+    p_mode.add_argument("--enable", action="store_true", help="Enable auto-filter")
+    p_mode.add_argument("--disable", action="store_true", help="Disable auto-filter")
+    p_mode.add_argument("--dry-run", choices=["on", "off"], help="Enable or disable dry-run mode")
+    p_mode.add_argument(
+        "--ai",
+        "--ai-political",
+        dest="ai_filter",
+        choices=["on", "off"],
+        help="Enable or disable OpenRouter Jev multi-category AI evaluation",
+    )
+    p_mode.add_argument("--ai-model", help="Set OpenRouter model ID (default: typesafe/jev-router)")
+    p_mode.add_argument("--openrouter-key", help="Set and save the OpenRouter API key")
+
+    p_eval = sub.add_parser("eval", help="Evaluate a message snippet with OpenRouter Jev against all active AI categories")
+    p_eval.add_argument("snippet", help="SMS message text to evaluate")
+    p_eval.add_argument("-s", "--sender", default="unknown", help="Sender phone number or short code")
+    p_eval.add_argument("--model", help="Override OpenRouter model (default: typesafe/jev-router)")
+    p_eval.add_argument("--force", action="store_true", help="Bypass AI evaluation cache")
+
+    p_eval_logs = sub.add_parser(
+        "eval-logs",
+        help="Evaluate previously logged messages in deleted.jsonl using OpenRouter Jev across all active AI categories",
+    )
+    p_eval_logs.add_argument("-n", "--limit", type=int, default=100, help="Number of log entries to evaluate")
+    p_eval_logs.add_argument(
+        "--only-blocked",
+        action="store_true",
+        help="Only evaluate messages that were previously blocked_and_reported_spam",
+    )
+    p_eval_logs.add_argument("--force", action="store_true", help="Bypass AI evaluation cache")
+
+    p_log = sub.add_parser("log", help="Show audit log of auto-handled messages")
+    p_log.add_argument("-n", "--limit", type=int, default=25, help="Number of entries to show")
+
+    p_scan = sub.add_parser(
+        "scan",
+        help="Trigger an immediate scan of existing conversations in open Google Messages Web windows",
+    )
+    p_scan.add_argument(
+        "--deep",
+        action="store_true",
+        help="Open each non-contact conversation to inspect full message history (not just sidebar preview snippet)",
+    )
+    p_scan.add_argument(
+        "--max-threads",
+        type=int,
+        default=50,
+        help="Maximum number of existing conversations/scroll steps to scan (default: 50)",
+    )
+
+    args = parser.parse_args()
+    cmd = args.cmd or "status"
+
+    try:
+        if cmd in ("status", "list"):
+            st = api_req("/api/status")
+            cfg = st.get("config", {})
+            ai_on = cfg.get("ai_filter_enabled", cfg.get("ai_political_filter_enabled", True))
+            ai_model = cfg.get("ai_political_model", "typesafe/jev-router")
+            key_ok = st.get("openrouter_key_configured", False)
+            cache_cnt = st.get("ai_cache_count", 0)
+            print(f"Filter Enabled     : {cfg.get('enabled', True)}")
+            print(f"Dry-Run Mode       : {cfg.get('dry_run', False)}")
+            print(f"Only Non-Contacts  : {cfg.get('only_non_contacts', True)}")
+            print(
+                f"AI Filter (Jev)    : {'ENABLED' if ai_on else 'DISABLED'} "
+                f"(model={ai_model}, 1-call multi-category, key={'OK' if key_ok else 'MISSING'}, cached={cache_cnt})"
+            )
+            vip_on = cfg.get("vip_alerts_enabled", True)
+            vips = cfg.get("vip_alert_contacts", ["Michelle Milliner"])
+            print(
+                f"VIP Desktop Alerts : {'ENABLED' if vip_on else 'DISABLED'} "
+                f"(contacts={vips}, triggers when Messages window not visible)"
+            )
+            print(f"Total Auto-Handled : {st.get('deleted_count', 0)}")
+            print("\nOpenRouter Jev AI Filter Categories (Evaluated Together in 1 Call):")
+            for c in cfg.get("ai_categories", []):
+                c_act = (c.get("action") or "block_spam").upper()
+                c_older = f" + older_than={c.get('older_than')!r}" if c.get("older_than") else ""
+                c_state = "ENABLED" if c.get("enabled", True) else "DISABLED"
+                print(f"  🤖 [{c.get('id')}] {c.get('name')}{c_older} -> ACTION: {c_act} [{c_state}]")
+            print("\nConfigured Static Rules (Per-Rule Actions):")
+            for p in cfg.get("patterns", []):
+                act = (p.get("action") or "delete").upper()
+                state = "ENABLED" if p.get("enabled", True) else "DISABLED"
+                print(f"  • [{p.get('id')}] {format_rule_desc(p)} -> ACTION: {act} [{state}]")
+            return 0
+
+        elif cmd == "ai-list":
+            st = api_req("/api/status")
+            cfg = st.get("config", {})
+            for c in cfg.get("ai_categories", []):
+                c_act = (c.get("action") or "block_spam").upper()
+                c_older = f" + older_than={c.get('older_than')!r}" if c.get("older_than") else ""
+                c_state = "ENABLED" if c.get("enabled", True) else "DISABLED"
+                print(f"🤖 [{c.get('id')}] {c.get('name')}{c_older} -> ACTION: {c_act} [{c_state}]")
+                print(f"   Prompt Description: {c.get('description')}\n")
+            return 0
+
+        elif cmd == "ai-add":
+            act = normalize_action_arg(
+                args.action,
+                args.block_spam,
+                args.archive,
+                args.delete,
+                default_act="block_spam",
+            )
+            payload = {
+                "name": args.name.strip(),
+                "description": args.description.strip(),
+                "action": act,
+            }
+            if args.older_than:
+                payload["older_than"] = args.older_than.strip()
+            res = api_req(
+                "/api/ai-categories",
+                method="POST",
+                payload=payload,
+            )
+            added = res.get("added", {})
+            older_tag = f" (older_than={added.get('older_than')!r})" if added.get("older_than") else ""
+            print(
+                f"Added/updated AI category [{added.get('id')}]: {added.get('name')} -> action={added.get('action')}{older_tag}\n"
+                f"  Description: {added.get('description')}"
+            )
+            return 0
+
+        elif cmd == "ai-update":
+            payload = {"id": args.target, "target": args.target}
+            if args.description is not None:
+                payload["description"] = args.description
+            if args.older_than is not None:
+                payload["older_than"] = args.older_than.strip()
+            if args.action or args.block_spam or args.archive or args.delete:
+                payload["action"] = normalize_action_arg(
+                    args.action,
+                    args.block_spam,
+                    args.archive,
+                    args.delete,
+                    default_act="block_spam",
+                )
+            if args.enable:
+                payload["enabled"] = True
+            elif args.disable:
+                payload["enabled"] = False
+            res = api_req("/api/ai-categories/update", method="POST", payload=payload)
+            u = res.get("updated", {})
+            older_tag = f", older_than={u.get('older_than')!r}" if u.get("older_than") else ""
+            print(
+                f"Updated AI category [{u.get('id')}]: {u.get('name')} -> action={u.get('action')}{older_tag} "
+                f"(enabled={u.get('enabled')})"
+            )
+            return 0
+
+        elif cmd == "ai-remove":
+            res = api_req("/api/ai-categories/delete", method="POST", payload={"id": args.target, "target": args.target})
+            print(f"Removed AI category {args.target!r} (remaining AI categories: {len(res['config']['ai_categories'])})")
+            return 0
+
+        elif cmd == "vip-list":
+            st = api_req("/api/status")
+            cfg = st.get("config", {})
+            vip_on = cfg.get("vip_alerts_enabled", True)
+            print(f"VIP Center-Desktop Alerts: {'ENABLED' if vip_on else 'DISABLED'}")
+            for v in cfg.get("vip_alert_contacts", []):
+                print(f"  🔔 {v}")
+            return 0
+
+        elif cmd == "vip-add":
+            res = api_req("/api/vip-contacts", method="POST", payload={"name": args.name.strip()})
+            print(f"Added VIP alert contact: {res.get('added')!r} (all VIP contacts: {res['config'].get('vip_alert_contacts')})")
+            return 0
+
+        elif cmd == "vip-remove":
+            res = api_req("/api/vip-contacts/delete", method="POST", payload={"name": args.name.strip()})
+            print(f"Removed VIP alert contact: {args.name.strip()!r} (remaining: {res['config'].get('vip_alert_contacts')})")
+            return 0
+
+        elif cmd == "vip-test":
+            res = api_req(
+                "/api/vip-alert",
+                method="POST",
+                payload={
+                    "sender": args.sender,
+                    "thread_sender": args.sender,
+                    "timestamp": "Just now",
+                    "is_active_conversation": bool(args.active_conversation),
+                    "force": True,
+                    "respect_visibility": bool(args.respect_visibility),
+                    "simulate_screenshare": bool(args.simulate_screenshare),
+                },
+            )
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0
+
+        elif cmd == "add":
+            msg_pat = (args.message or args.pattern or "").strip()
+            num_pat = (args.number or "").strip()
+            older_pat = (args.older_than or "").strip()
+            if not msg_pat and not num_pat and not older_pat:
+                print("Error: Provide a message pattern, --number, --older-than, or a combination.", file=sys.stderr)
+                return 1
+            action = normalize_action_arg(args.action, args.block_spam, args.archive)
+            res = api_req(
+                "/api/patterns",
+                method="POST",
+                payload={
+                    "pattern": msg_pat,
+                    "number": num_pat,
+                    "older_than": older_pat,
+                    "is_regex": args.regex,
+                    "case_sensitive": args.case_sensitive,
+                    "action": action,
+                },
+            )
+            added = res.get("added") or {
+                "pattern": msg_pat,
+                "number": num_pat,
+                "older_than": older_pat,
+                "is_regex": args.regex,
+                "case_sensitive": args.case_sensitive,
+            }
+            print(
+                f"Added rule [{added.get('id', 'ok')}]: {format_rule_desc(added)} "
+                f"with action={action} (total rules: {len(res['config']['patterns'])})"
+            )
+            return 0
+
+        elif cmd == "update":
+            payload = {"id": args.target, "target": args.target}
+            if args.message is not None:
+                payload["pattern"] = args.message
+            if args.number is not None:
+                payload["number"] = args.number
+            if args.older_than is not None:
+                payload["older_than"] = args.older_than
+            if args.action:
+                payload["action"] = args.action.replace("-", "_")
+            elif args.block_spam:
+                payload["action"] = "block_spam" if args.block_spam == "on" else "delete"
+            elif args.archive:
+                payload["action"] = "archive" if args.archive == "on" else "delete"
+            res = api_req("/api/patterns/update", method="POST", payload=payload)
+            u = res.get("updated", {})
+            print(f"Updated rule [{u.get('id')}]: {format_rule_desc(u)} -> action={u.get('action')}")
+            return 0
+
+        elif cmd == "set-action":
+            res = api_req(
+                "/api/patterns/update",
+                method="POST",
+                payload={"id": args.target, "target": args.target, "action": args.action.replace("-", "_")},
+            )
+            u = res.get("updated", {})
+            print(f"Updated rule [{u.get('id')}]: {format_rule_desc(u)} -> action={u.get('action')}")
+            return 0
+
+        elif cmd == "set-older-than":
+            res = api_req(
+                "/api/patterns/update",
+                method="POST",
+                payload={"id": args.target, "target": args.target, "older_than": args.older_than},
+            )
+            u = res.get("updated", {})
+            print(f"Updated rule [{u.get('id')}]: {format_rule_desc(u)} -> action={u.get('action')}")
+            return 0
+
+        elif cmd == "remove":
+            res = api_req(
+                "/api/patterns/delete",
+                method="POST",
+                payload={"id": args.target, "pattern": args.target, "number": args.target},
+            )
+            print(f"Removed {args.target!r} (remaining rules: {len(res['config']['patterns'])})")
+            return 0
+
+        elif cmd == "mode":
+            updates = {}
+            if args.enable:
+                updates["enabled"] = True
+            if args.disable:
+                updates["enabled"] = False
+            if args.dry_run:
+                updates["dry_run"] = args.dry_run == "on"
+            if args.ai_filter:
+                updates["ai_filter_enabled"] = args.ai_filter == "on"
+                updates["ai_political_filter_enabled"] = args.ai_filter == "on"
+            if args.ai_model:
+                updates["ai_political_model"] = args.ai_model.strip()
+            if args.openrouter_key:
+                updates["openrouter_api_key"] = args.openrouter_key.strip()
+            res = api_req("/api/config", method="POST", payload=updates)
+            cfg = res["config"]
+            print(
+                f"Updated settings: enabled={cfg['enabled']}, dry_run={cfg['dry_run']}, "
+                f"ai_filter={cfg.get('ai_filter_enabled')}, model={cfg.get('ai_political_model')}"
+            )
+            return 0
+
+        elif cmd == "eval":
+            res = api_req(
+                "/api/evaluate",
+                method="POST",
+                payload={
+                    "sender": args.sender,
+                    "snippet": args.snippet,
+                    "model": args.model,
+                    "force": args.force,
+                },
+                timeout=30,
+            )
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0
+
+        elif cmd == "eval-logs":
+            res = api_req(
+                "/api/evaluate-logs",
+                method="POST",
+                payload={
+                    "limit": args.limit,
+                    "only_blocked": args.only_blocked,
+                    "force": args.force,
+                },
+                timeout=120,
+            )
+            print(f"Model              : {res.get('model')}")
+            print(f"Active Categories  : {', '.join(res.get('active_categories', []))}")
+            print(f"Total Evaluated    : {res.get('total_evaluated')} ({res.get('unique_messages')} unique snippets)")
+            print(f"Previously Blocked : {res.get('previously_blocked_total')}")
+            print(f"  ├─ Jev Matched (WOULD BLOCK & SPAM) : {res.get('previously_blocked_political')}")
+            print(f"  └─ Jev Unmatched (WOULD ALLOW)      : {res.get('previously_blocked_non_political')}")
+            print(f"Matches by Category: {json.dumps(res.get('by_category_counts', {}))}")
+            print()
+            for r in res.get("results", []):
+                cats_str = ", ".join(r.get("jev_categories") or []) or "None"
+                verdict = (
+                    f"🚫 {r.get('jev_action', 'block_spam').upper()} [{cats_str}]"
+                    if r.get("jev_matched")
+                    else "✅ ALLOW (No Category Match)"
+                )
+                conf = r.get("jev_confidence", 0.0)
+                routed = r.get("jev_routed_model") or "jev"
+                print(
+                    f"#{r['index']:02d} [{r['previous_action'].upper()}] From: {r['sender']} | Old Rule: {r['matched_pattern']}\n"
+                    f"    Jev Verdict : {verdict} (conf={conf:.2f}, routed={routed})\n"
+                    f"    Reason      : {r.get('jev_reason')}\n"
+                    f"    Snippet     : {r['snippet']}\n"
+                )
+            return 0
+
+        elif cmd == "log":
+            res = api_req(f"/api/logs?limit={args.limit}")
+            logs = res.get("logs", [])
+            if not logs:
+                print("No auto-filtered messages recorded yet.")
+                return 0
+            for entry in logs:
+                print(
+                    f"[{entry.get('timestamp')}] [{entry.get('action', 'deleted').upper()}] "
+                    f"From: {entry.get('sender')} | Rule: {entry.get('matched_pattern')!r} | "
+                    f"Browser: {entry.get('browser')}\n"
+                    f"  Snippet: {entry.get('snippet')}"
+                )
+            return 0
+
+        elif cmd == "scan":
+            mode = "deep" if args.deep else "quick"
+            res = api_req(
+                "/api/scan",
+                method="POST",
+                payload={"mode": mode, "max_threads": args.max_threads},
+            )
+            sr = res.get("scan_request", {})
+            print(
+                f"Triggered {mode.upper()} scan ({sr.get('scan_id')}, max_threads={sr.get('max_threads')}) "
+                f"for open Google Messages Web tabs."
+            )
+            return 0
+    except Exception as e:
+        print(f"Error communicating with gmessages-filter server ({BASE_URL}): {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

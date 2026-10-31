@@ -1,0 +1,13 @@
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.xpi
+ai_eval_cache.json
+config.json
+deleted.jsonl
+deleted.log
+recent_conversations.json
+server.log
+openrouter_api_key
