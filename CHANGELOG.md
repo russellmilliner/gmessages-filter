@@ -2,6 +2,11 @@
 
 All notable changes to **Google Messages Web Auto-Filter** (`gmessages-filter`) will be documented in this file.
 
+## [v1.9.0](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.0) — 2026-10-31
+
+### Commits
+- feat: Google Messages Web Auto-Filter v1.9.0 with Jev AI older_than age thresholds & KDE VIP alerts (7684eb9)
+
 ## [1.9.0] - 2026-10-31
 
 ### Added
