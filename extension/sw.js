@@ -70,6 +70,7 @@ async function syncFromServer() {
           openrouter_key_configured: !!data.openrouter_key_configured,
           ai_cache_count: data.ai_cache_count || 0,
           logs: data.recent_logs || [],
+          ai_evals: data.recent_ai_evals || [],
           deleted_count: data.deleted_count || 0,
           scan_request: data.scan_request || null,
           open_conv_request: data.open_conv_request || null

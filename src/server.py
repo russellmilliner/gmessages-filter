@@ -537,6 +537,10 @@ def evaluate_categories_openrouter(
     if not force and cache_key in cache:
         cached_entry = dict(cache[cache_key])
         cached_entry["cached"] = True
+        if not cached_entry.get("sender") and clean_sender:
+            cached_entry["sender"] = clean_sender
+        if not cached_entry.get("snippet") and clean_snippet:
+            cached_entry["snippet"] = clean_snippet[:300]
         # Ensure action and older_than reflect current category config
         prim = cached_entry.get("primary_category")
         if cached_entry.get("matched") and prim:
@@ -645,6 +649,8 @@ def evaluate_categories_openrouter(
 
         result = {
             "ok": True,
+            "sender": clean_sender,
+            "snippet": clean_snippet[:300],
             "matched": matched,
             "is_political": matched,  # backward compatibility for callers checking is_political
             "matched_categories": canonical_cats,
@@ -855,6 +861,11 @@ class FilterRequestHandler(BaseHTTPRequestHandler):
             cfg = load_config()
             logs = read_audit_entries(limit=1000)
             cache = load_ai_cache()
+            recent_ai_evals = sorted(
+                (v for v in cache.values() if isinstance(v, dict)),
+                key=lambda x: str(x.get("evaluated_at") or ""),
+                reverse=True,
+            )[:60]
             ext_ver = "1.7.0"
             try:
                 manifest_path = DATA_DIR / "extension" / "manifest.json"
@@ -869,7 +880,8 @@ class FilterRequestHandler(BaseHTTPRequestHandler):
                 "openrouter_key_configured": bool(get_openrouter_api_key(cfg)),
                 "ai_cache_count": len(cache),
                 "deleted_count": len(logs),
-                "recent_logs": logs[:25],
+                "recent_logs": logs[:80],
+                "recent_ai_evals": recent_ai_evals,
                 "scan_request": SCAN_REQUEST,
                 "open_conv_request": OPEN_CONV_REQUEST,
                 "last_clients": LAST_CLIENTS,

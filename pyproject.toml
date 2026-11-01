@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gmessages-filter"
-version = "1.9.0"
+version = "1.9.1"
 description = "Google Messages Web Auto-Filter WebExtension (Chromium PWA & Zen/Firefox), Local Sync & Audit Daemon, OpenRouter Jev 1-Call Multi-Category AI Filter with Age Thresholds, and KDE Plasma 6 VIP Desktop Alerts"
 readme = "README.md"
 requires-python = ">=3.11"

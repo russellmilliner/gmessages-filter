@@ -2,6 +2,11 @@
 
 All notable changes to **Google Messages Web Auto-Filter** (`gmessages-filter`) will be documented in this file.
 
+## [v1.9.1](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.1) — 2026-11-01
+
+### Highlights
+- Add popup Logs tab (Handled + Jev AI evaluations) and prevent Bitwarden autofill popups
+
 ## [v1.9.0](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.0) — 2026-10-31
 
 ### Commits

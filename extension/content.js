@@ -51,7 +51,7 @@
   const deleteQueue = [];
 
   const API_BASE = "http://127.0.0.1:8768";
-  const EXT_VERSION = "1.9.0";
+  const EXT_VERSION = "1.9.1";
 
   async function directApiFallback(type, payload = {}) {
     const routeMap = {
@@ -1218,6 +1218,22 @@
   let badgeEl = null;
   let drawerEl = null;
   let drawerOpen = false;
+  let activeDrawerTab = "rules"; // "rules" | "logs"
+  let activeLogFilter = "all"; // "all" | "actions" | "jev"
+  let logSearchQuery = "";
+  let lastRenderedRulesSig = "";
+
+  function setIgnorePasswordManagers(el) {
+    if (!el || !el.setAttribute) return;
+    el.setAttribute("autocomplete", "off");
+    el.setAttribute("autocorrect", "off");
+    el.setAttribute("autocapitalize", "off");
+    el.setAttribute("spellcheck", "false");
+    el.setAttribute("data-bwignore", "true");
+    el.setAttribute("data-1p-ignore", "true");
+    el.setAttribute("data-lpignore", "true");
+    el.setAttribute("data-form-type", "other");
+  }
 
   function ensureUI() {
     if (document.getElementById("gmf-root")) return;
@@ -1306,7 +1322,8 @@
           gap: 5px;
           align-items: center;
         }
-        .gmf-input-row input[type="text"] {
+        .gmf-input-row input[type="text"],
+        .gmf-input-row input[type="search"] {
           flex: 1;
           min-width: 0;
           background: #1e293b;
@@ -1382,95 +1399,162 @@
           font-size: 11px;
           color: #94a3b8;
         }
+        .gmf-logs-full {
+          max-height: 490px;
+          overflow-y: auto;
+          background: #020617;
+          border: 1px solid #1e293b;
+          border-radius: 6px;
+          padding: 6px 8px;
+          font-size: 11px;
+          color: #cbd5e1;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
         .gmf-log-item {
-          padding: 4px 0;
+          padding: 5px 6px;
           border-bottom: 1px solid #1e293b;
+          border-radius: 4px;
+          background: #0f172a;
+          line-height: 1.35;
+          word-break: break-word;
         }
         .gmf-log-item:last-child { border-bottom: none; }
+        .gmf-tabs {
+          display: flex;
+          background: #0f172a;
+          border-bottom: 1px solid #334155;
+          padding: 0 10px;
+          gap: 4px;
+        }
+        .gmf-tab-btn {
+          background: transparent;
+          color: #94a3b8;
+          border: none;
+          border-bottom: 2px solid transparent;
+          padding: 8px 12px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .gmf-tab-btn:hover {
+          color: #e2e8f0;
+        }
+        .gmf-tab-btn.active {
+          color: #38bdf8;
+          border-bottom-color: #38bdf8;
+        }
+        .gmf-subpill {
+          background: #1e293b;
+          color: #94a3b8;
+          border: 1px solid #334155;
+          border-radius: 999px;
+          padding: 3px 9px;
+          font-size: 11px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .gmf-subpill.active {
+          background: #0284c7;
+          color: #fff;
+          border-color: #38bdf8;
+        }
       </style>
       <div id="gmf-badge" title="Click to configure Google Messages Auto-Filter">
         <span id="gmf-dot"></span>
         <span id="gmf-badge-text">Filter: 3 rules</span>
       </div>
-      <div id="gmf-drawer">
+      <div id="gmf-drawer" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other">
         <div class="gmf-header">
-          <span>🛡️ Messages Auto-Filter</span>
+          <span>🛡️ Messages Auto-Filter <span style="font-size:10px;color:#64748b;font-weight:500;">v${EXT_VERSION}</span></span>
           <span id="gmf-sync-status" style="font-size:11px;font-weight:400;color:#94a3b8;">Synced</span>
         </div>
-        <div class="gmf-body">
+        <div class="gmf-tabs">
+          <button type="button" class="gmf-tab-btn active" id="gmf-tab-rules">⚙️ Rules &amp; Config</button>
+          <button type="button" class="gmf-tab-btn" id="gmf-tab-logs">📜 Logs</button>
+        </div>
+        <div class="gmf-body" id="gmf-pane-rules">
           <div class="gmf-row">
-            <label><input type="checkbox" id="gmf-enabled"> Enable Auto-Filter</label>
-            <label><input type="checkbox" id="gmf-dryrun"> Dry-Run</label>
+            <label><input type="checkbox" id="gmf-enabled" data-bwignore="true"> Enable Auto-Filter</label>
+            <label><input type="checkbox" id="gmf-dryrun" data-bwignore="true"> Dry-Run</label>
           </div>
           <div class="gmf-row">
-            <label><input type="checkbox" id="gmf-noncontacts"> Only numbers not in contacts</label>
+            <label><input type="checkbox" id="gmf-noncontacts" data-bwignore="true"> Only numbers not in contacts</label>
           </div>
           <div style="border-top:1px solid #334155;padding-top:8px;">
             <div class="gmf-row" style="margin-bottom:5px;">
               <label style="display:flex;align-items:center;gap:6px;font-weight:600;" title="Pops up a center-of-primary-desktop alert when one of these contacts messages you and Google Messages is not visible on the desktop">
-                <input type="checkbox" id="gmf-vip-enabled">
+                <input type="checkbox" id="gmf-vip-enabled" data-bwignore="true">
                 <span>🔔 VIP Center-Desktop Alert Contacts</span>
               </label>
-              <button class="gmf-btn-sec" id="gmf-vip-test-btn" style="padding:3px 8px;font-size:11px;" title="Test the center-of-primary-desktop alert popup">Test Alert</button>
+              <button type="button" class="gmf-btn-sec" id="gmf-vip-test-btn" style="padding:3px 8px;font-size:11px;" title="Test the center-of-primary-desktop alert popup">Test Alert</button>
             </div>
             <div class="gmf-input-row" style="margin-bottom:6px;">
-              <input type="text" id="gmf-new-vip" placeholder="👤 Contact name (e.g. Michelle Milliner)...">
-              <button class="gmf-btn" id="gmf-add-vip-btn">Add</button>
+              <input type="search" id="gmf-new-vip" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="👤 Contact name (e.g. Michelle Milliner)...">
+              <button type="button" class="gmf-btn" id="gmf-add-vip-btn">Add</button>
             </div>
             <div class="gmf-rule-list" id="gmf-vip-contacts"></div>
           </div>
           <div style="border-top:1px solid #334155;padding-top:8px;">
             <div class="gmf-row" style="margin-bottom:5px;">
               <label style="display:flex;align-items:center;gap:6px;font-weight:600;" title="Evaluates non-contact messages against all active AI categories in a single OpenRouter Jev (typesafe/jev-router) call">
-                <input type="checkbox" id="gmf-ai-enabled">
+                <input type="checkbox" id="gmf-ai-enabled" data-bwignore="true">
                 <span>🤖 OpenRouter <b>Jev</b> AI Categories (1-Call)</span>
               </label>
             </div>
             <div class="gmf-input-row" style="margin-bottom:6px;">
-              <input type="text" id="gmf-new-ai-cat" placeholder="🤖 Add AI category (e.g. login codes, food orders)...">
-              <input type="text" id="gmf-new-ai-older" placeholder="⏳ age (e.g. 1d)" style="max-width:95px;" title="Only apply when message is older than X (e.g. 1d, 24h, or blank for immediate)">
+              <input type="search" id="gmf-new-ai-cat" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="🤖 Add AI category (e.g. login codes, food orders)...">
+              <input type="search" id="gmf-new-ai-older" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="⏳ age (e.g. 1d)" style="max-width:95px;" title="Only apply when message is older than X (e.g. 1d, 24h, or blank for immediate)">
               <select id="gmf-new-ai-action" class="gmf-select" title="Action when matched">
                 <option value="block_spam" selected>Block &amp; Spam</option>
                 <option value="archive">Archive</option>
                 <option value="delete">Delete</option>
               </select>
-              <button class="gmf-btn" id="gmf-add-ai-btn">Add</button>
+              <button type="button" class="gmf-btn" id="gmf-add-ai-btn">Add</button>
             </div>
             <div class="gmf-rule-list" id="gmf-ai-categories"></div>
           </div>
           <div style="border-top:1px solid #334155;padding-top:8px;">
             <div style="font-weight:600;margin-bottom:5px;">Scan Existing Messages</div>
             <div class="gmf-input-row">
-              <button class="gmf-btn-sec" id="gmf-scan-quick" title="Scroll down inbox and scan existing conversation previews &amp; numbers">🔍 Scan Inbox (Scroll)</button>
-              <button class="gmf-btn-sec" id="gmf-scan-deep" title="Open each non-contact conversation to inspect full message history">🔬 Deep Scan Threads</button>
-              <button class="gmf-btn-sec" id="gmf-scan-stop" style="display:none;background:#dc2626;border-color:#ef4444;">⏹ Stop</button>
+              <button type="button" class="gmf-btn-sec" id="gmf-scan-quick" title="Scroll down inbox and scan existing conversation previews &amp; numbers">🔍 Scan Inbox (Scroll)</button>
+              <button type="button" class="gmf-btn-sec" id="gmf-scan-deep" title="Open each non-contact conversation to inspect full message history">🔬 Deep Scan Threads</button>
+              <button type="button" class="gmf-btn-sec" id="gmf-scan-stop" style="display:none;background:#dc2626;border-color:#ef4444;">⏹ Stop</button>
             </div>
             <div id="gmf-scan-status" style="font-size:11px;color:#38bdf8;margin-top:4px;display:none;"></div>
           </div>
           <div style="border-top:1px solid #334155;padding-top:8px;">
             <div style="font-weight:600;margin-bottom:4px;">Add Static Rule (Number, Message, Age, or Combined)</div>
             <div class="gmf-input-row" style="margin-bottom:5px;">
-              <input type="text" id="gmf-new-num" placeholder="📞 Caller # (optional, e.g. 88022)">
-              <input type="text" id="gmf-new-pat" placeholder="💬 Message text / regex (optional)">
+              <input type="search" id="gmf-new-num" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="📞 Caller # (optional, e.g. 88022)">
+              <input type="search" id="gmf-new-pat" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="💬 Message text / regex (optional)">
             </div>
             <div class="gmf-input-row" style="justify-content:flex-end;">
-              <input type="text" id="gmf-new-older" placeholder="⏳ Older than (e.g. 7d, 24h)" style="max-width:138px;" title="Only match messages older than X (e.g. 7 or 7d = 7 days, 24h = 24 hours, 2w = 2 weeks)">
+              <input type="search" id="gmf-new-older" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="⏳ Older than (e.g. 7d, 24h)" style="max-width:138px;" title="Only match messages older than X (e.g. 7 or 7d = 7 days, 24h = 24 hours, 2w = 2 weeks)">
               <label style="font-size:11px;display:flex;align-items:center;gap:3px;margin-right:auto;">
-                <input type="checkbox" id="gmf-new-regex"> Regex
+                <input type="checkbox" id="gmf-new-regex" data-bwignore="true"> Regex
               </label>
               <select id="gmf-new-action" class="gmf-select" title="Action when matched">
                 <option value="delete">Delete</option>
                 <option value="block_spam" selected>Block &amp; Spam</option>
                 <option value="archive">Archive</option>
               </select>
-              <button class="gmf-btn" id="gmf-add-btn">Add Rule</button>
+              <button type="button" class="gmf-btn" id="gmf-add-btn">Add Rule</button>
             </div>
             <div class="gmf-rule-list" id="gmf-patterns" style="margin-top:8px;"></div>
           </div>
-          <div style="border-top:1px solid #334155;padding-top:8px;">
-            <div style="font-weight:600;margin-bottom:4px;">Recent Auto-Filter Audit Log</div>
-            <div class="gmf-logs" id="gmf-logs"></div>
+        </div>
+        <div class="gmf-body" id="gmf-pane-logs" style="display:none;">
+          <div class="gmf-row" style="gap:5px;flex-wrap:wrap;">
+            <div style="display:flex;gap:4px;">
+              <button type="button" class="gmf-subpill active" id="gmf-log-filter-all">All</button>
+              <button type="button" class="gmf-subpill" id="gmf-log-filter-actions">Handled</button>
+              <button type="button" class="gmf-subpill" id="gmf-log-filter-jev">🤖 Jev AI</button>
+            </div>
+            <input type="search" id="gmf-log-search" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" spellcheck="false" placeholder="🔍 Filter logs..." style="flex:1;min-width:110px;background:#1e293b;color:#f8fafc;border:1px solid #475569;border-radius:6px;padding:4px 8px;font-size:11px;">
           </div>
+          <div class="gmf-logs-full" id="gmf-logs"></div>
         </div>
       </div>
     `;
@@ -1482,8 +1566,52 @@
     badgeEl.addEventListener("click", () => {
       drawerOpen = !drawerOpen;
       drawerEl.classList.toggle("open", drawerOpen);
-      if (drawerOpen) renderUI();
+      if (drawerOpen) renderUI(true);
     });
+
+    const switchTab = (tabName) => {
+      activeDrawerTab = tabName;
+      const tabRules = document.getElementById("gmf-tab-rules");
+      const tabLogs = document.getElementById("gmf-tab-logs");
+      const paneRules = document.getElementById("gmf-pane-rules");
+      const paneLogs = document.getElementById("gmf-pane-logs");
+      if (tabRules && tabLogs && paneRules && paneLogs) {
+        tabRules.classList.toggle("active", tabName === "rules");
+        tabLogs.classList.toggle("active", tabName === "logs");
+        paneRules.style.display = tabName === "rules" ? "flex" : "none";
+        paneLogs.style.display = tabName === "logs" ? "flex" : "none";
+      }
+      renderLogsPane();
+    };
+
+    document.getElementById("gmf-tab-rules").addEventListener("click", () => switchTab("rules"));
+    document.getElementById("gmf-tab-logs").addEventListener("click", () => switchTab("logs"));
+
+    const setLogFilter = (filterName) => {
+      activeLogFilter = filterName;
+      for (const [id, name] of [
+        ["gmf-log-filter-all", "all"],
+        ["gmf-log-filter-actions", "actions"],
+        ["gmf-log-filter-jev", "jev"]
+      ]) {
+        const btn = document.getElementById(id);
+        if (btn) btn.classList.toggle("active", filterName === name);
+      }
+      renderLogsPane();
+    };
+
+    document.getElementById("gmf-log-filter-all").addEventListener("click", () => setLogFilter("all"));
+    document.getElementById("gmf-log-filter-actions").addEventListener("click", () => setLogFilter("actions"));
+    document.getElementById("gmf-log-filter-jev").addEventListener("click", () => setLogFilter("jev"));
+
+    const logSearchEl = document.getElementById("gmf-log-search");
+    if (logSearchEl) {
+      setIgnorePasswordManagers(logSearchEl);
+      logSearchEl.addEventListener("input", (e) => {
+        logSearchQuery = (e.target.value || "").trim().toLowerCase();
+        renderLogsPane();
+      });
+    }
 
     document.getElementById("gmf-enabled").addEventListener("change", async (e) => {
       await sendMsg("UPDATE_CONFIG", { enabled: e.target.checked });
@@ -1624,7 +1752,150 @@
     renderUI();
   }
 
-  function renderUI() {
+  function renderLogsPane() {
+    const logContainer = document.getElementById("gmf-logs");
+    const tabLogsBtn = document.getElementById("gmf-tab-logs");
+    const logs = state.logs || [];
+    const aiEvals = state.ai_evals || [];
+    if (tabLogsBtn) {
+      tabLogsBtn.textContent = `📜 Logs (${logs.length} handled · ${aiEvals.length} AI)`;
+    }
+    if (!logContainer) return;
+
+    const combined = [];
+    if (activeLogFilter === "all" || activeLogFilter === "actions") {
+      for (const l of logs) {
+        combined.push({
+          kind: "action",
+          ts: l.timestamp || "",
+          sender: l.sender || "unknown",
+          action: (l.action || "deleted").toUpperCase(),
+          rule: l.matched_pattern || "",
+          snippet: l.snippet || ""
+        });
+      }
+    }
+    if (activeLogFilter === "all" || activeLogFilter === "jev") {
+      for (const ev of aiEvals) {
+        combined.push({
+          kind: "jev",
+          ts: ev.evaluated_at || "",
+          sender: ev.sender || "non-contact",
+          matched: !!ev.matched,
+          category: ev.primary_category || "Pass",
+          older_than: ev.older_than || "",
+          action: ev.action_if_matched || "none",
+          conf: typeof ev.confidence === "number" ? ev.confidence : 0,
+          model: ev.routed_model || ev.model || "jev-router",
+          reason: ev.reason || "",
+          snippet: ev.snippet || ""
+        });
+      }
+    }
+
+    combined.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+
+    const filtered = logSearchQuery
+      ? combined.filter((item) => {
+          const hay = `${item.sender} ${item.rule || ""} ${item.category || ""} ${item.reason || ""} ${item.snippet || ""} ${item.model || ""}`.toLowerCase();
+          return hay.includes(logSearchQuery);
+        })
+      : combined;
+
+    logContainer.innerHTML = "";
+    if (filtered.length === 0) {
+      logContainer.innerHTML = `<div style="color:#64748b;padding:8px 4px;">No matching log entries found.</div>`;
+      return;
+    }
+
+    for (const item of filtered.slice(0, 80)) {
+      const div = document.createElement("div");
+      div.className = "gmf-log-item";
+      const shortTs = item.ts ? item.ts.replace("T", " ").replace(/\.\d+Z$/, "Z").slice(5, 19) : "";
+
+      if (item.kind === "action") {
+        let badgeColor = "#ef4444";
+        if (item.action.includes("ARCHIVE")) badgeColor = "#38bdf8";
+        else if (item.action.includes("SPAM")) badgeColor = "#f59e0b";
+
+        const header = document.createElement("div");
+        header.style.display = "flex";
+        header.style.justifyContent = "space-between";
+        header.style.alignItems = "center";
+        header.style.marginBottom = "2px";
+
+        const left = document.createElement("span");
+        left.innerHTML = `<b style="color:${badgeColor};">[${item.action}]</b> <b style="color:#f8fafc;"></b>`;
+        left.querySelectorAll("b")[1].textContent = item.sender;
+
+        const right = document.createElement("span");
+        right.style.color = "#64748b";
+        right.style.fontSize = "10px";
+        right.textContent = shortTs;
+
+        header.appendChild(left);
+        header.appendChild(right);
+
+        const ruleLine = document.createElement("div");
+        ruleLine.style.color = "#93c5fd";
+        ruleLine.style.fontSize = "10.5px";
+        ruleLine.textContent = `Rule: ${item.rule}`;
+
+        const snipLine = document.createElement("div");
+        snipLine.style.color = "#cbd5e1";
+        snipLine.style.marginTop = "2px";
+        snipLine.textContent = item.snippet;
+
+        div.appendChild(header);
+        div.appendChild(ruleLine);
+        div.appendChild(snipLine);
+      } else {
+        const badgeColor = item.matched ? "#a855f7" : "#475569";
+        const statusText = item.matched
+          ? `🤖 MATCH: ${item.category}${item.older_than ? ` (⏳ >${item.older_than})` : ""} → ${item.action.toUpperCase()}`
+          : `🤖 PASS (conf ${(item.conf * 100).toFixed(0)}%)`;
+
+        const header = document.createElement("div");
+        header.style.display = "flex";
+        header.style.justifyContent = "space-between";
+        header.style.alignItems = "center";
+        header.style.marginBottom = "2px";
+
+        const left = document.createElement("span");
+        left.innerHTML = `<b style="color:${badgeColor};"></b> <b style="color:#f8fafc;"></b>`;
+        const bTags = left.querySelectorAll("b");
+        bTags[0].textContent = `[${statusText}]`;
+        bTags[1].textContent = item.sender;
+
+        const right = document.createElement("span");
+        right.style.color = "#64748b";
+        right.style.fontSize = "10px";
+        right.textContent = `${item.model} · ${shortTs}`;
+
+        header.appendChild(left);
+        header.appendChild(right);
+        div.appendChild(header);
+
+        if (item.reason) {
+          const reasonLine = document.createElement("div");
+          reasonLine.style.color = "#94a3b8";
+          reasonLine.style.fontSize = "10.5px";
+          reasonLine.textContent = `Reason: ${item.reason}`;
+          div.appendChild(reasonLine);
+        }
+        if (item.snippet) {
+          const snipLine = document.createElement("div");
+          snipLine.style.color = "#cbd5e1";
+          snipLine.style.marginTop = "2px";
+          snipLine.textContent = item.snippet;
+          div.appendChild(snipLine);
+        }
+      }
+      logContainer.appendChild(div);
+    }
+  }
+
+  function renderUI(forceRebuildRules = false) {
     ensureUI();
     const cfg = state.config || {};
     const pats = cfg.patterns || [];
@@ -1673,6 +1944,25 @@
     if (vipCheck) {
       vipCheck.checked = cfg.vip_alerts_enabled !== false;
     }
+    const aiCheck = document.getElementById("gmf-ai-enabled");
+    if (aiCheck) {
+      aiCheck.checked = cfg.ai_filter_enabled !== false;
+    }
+
+    renderLogsPane();
+
+    // Avoid destroying and recreating rule list <input> elements every 4s if nothing changed,
+    // which otherwise triggers Bitwarden's DOM MutationObserver and steals input focus.
+    const rulesSig = JSON.stringify({
+      vips: cfg.vip_alert_contacts || [],
+      aiCats,
+      pats
+    });
+    if (!forceRebuildRules && rulesSig === lastRenderedRulesSig) {
+      return;
+    }
+    lastRenderedRulesSig = rulesSig;
+
     const vipContainer = document.getElementById("gmf-vip-contacts");
     if (vipContainer) {
       vipContainer.innerHTML = "";
@@ -1684,6 +1974,7 @@
         label.style.flex = "1";
         label.textContent = `🔔 ${v}`;
         const delBtn = document.createElement("button");
+        delBtn.type = "button";
         delBtn.className = "gmf-rule-del";
         delBtn.textContent = "×";
         delBtn.title = "Remove VIP contact";
@@ -1695,10 +1986,6 @@
         row.appendChild(delBtn);
         vipContainer.appendChild(row);
       }
-    }
-    const aiCheck = document.getElementById("gmf-ai-enabled");
-    if (aiCheck) {
-      aiCheck.checked = cfg.ai_filter_enabled !== false;
     }
 
     const aiCatContainer = document.getElementById("gmf-ai-categories");
@@ -1712,6 +1999,7 @@
         toggle.type = "checkbox";
         toggle.checked = c.enabled !== false;
         toggle.title = "Enable/disable this AI category";
+        setIgnorePasswordManagers(toggle);
         toggle.addEventListener("change", async (e) => {
           await sendMsg("UPDATE_AI_CATEGORY", {
             id: c.id,
@@ -1730,7 +2018,8 @@
         label.title = c.description || c.name;
 
         const olderInput = document.createElement("input");
-        olderInput.type = "text";
+        olderInput.type = "search";
+        setIgnorePasswordManagers(olderInput);
         olderInput.value = c.older_than || "";
         olderInput.placeholder = "⏳ age";
         olderInput.title = "Only apply when message is older than X (e.g. 1d, 24h, or blank for immediate). Press Enter to save.";
@@ -1784,6 +2073,7 @@
         });
 
         const delBtn = document.createElement("button");
+        delBtn.type = "button";
         delBtn.className = "gmf-rule-del";
         delBtn.textContent = "×";
         delBtn.title = "Remove AI category";
@@ -1817,7 +2107,8 @@
       label.title = formatRuleLabel(p);
 
       const olderInput = document.createElement("input");
-      olderInput.type = "text";
+      olderInput.type = "search";
+      setIgnorePasswordManagers(olderInput);
       olderInput.value = p.older_than || "";
       olderInput.placeholder = "⏳ age";
       olderInput.title = "Older than (e.g. 7d, 24h, or blank for any age). Press Enter to save.";
@@ -1870,6 +2161,7 @@
       });
 
       const delBtn = document.createElement("button");
+      delBtn.type = "button";
       delBtn.className = "gmf-rule-del";
       delBtn.textContent = "×";
       delBtn.title = "Remove rule";
@@ -1883,20 +2175,6 @@
       row.appendChild(actSelect);
       row.appendChild(delBtn);
       patContainer.appendChild(row);
-    }
-
-    const logContainer = document.getElementById("gmf-logs");
-    const logs = state.logs || [];
-    if (logs.length === 0) {
-      logContainer.innerHTML = "<div>No messages auto-filtered yet.</div>";
-    } else {
-      logContainer.innerHTML = "";
-      for (const l of logs.slice(0, 15)) {
-        const div = document.createElement("div");
-        div.className = "gmf-log-item";
-        div.textContent = `[${(l.action || "deleted").toUpperCase()}] ${l.sender} (${l.matched_pattern}): ${l.snippet}`;
-        logContainer.appendChild(div);
-      }
     }
   }
 
@@ -1921,6 +2199,7 @@
       state.openrouter_key_configured = !!res.openrouter_key_configured;
       state.ai_cache_count = res.ai_cache_count || 0;
       state.logs = res.logs || [];
+      state.ai_evals = res.ai_evals || [];
       state.deleted_count = res.deleted_count || 0;
       state.online = !!res.online;
 
