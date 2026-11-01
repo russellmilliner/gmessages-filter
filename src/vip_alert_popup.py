@@ -146,7 +146,6 @@ if (gmCandidates.length === 0) {{
             while not res_holder and time.time() < deadline:
                 app.processEvents()
                 time.sleep(0.01)
-            s_iface.call("stop")
         scripting.call("unloadScript", plugin)
     except Exception as e:
         return {"found": False, "visible": False, "reason": f"kwin_error: {e}"}
@@ -515,7 +514,6 @@ for (let i = 0; i < wins.length; i++) {{
                 script_id = reply.arguments()[0]
                 s_iface = QDBusInterface("org.kde.KWin", f"/Scripting/Script{script_id}", "org.kde.kwin.Script", bus)
                 s_iface.call("run")
-                s_iface.call("stop")
             scripting.call("unloadScript", plugin)
         except Exception:
             pass

@@ -2,6 +2,11 @@
 
 All notable changes to **Google Messages Web Auto-Filter** (`gmessages-filter`) will be documented in this file.
 
+## [v1.9.2](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.2) — 2026-11-01
+
+### Highlights
+- Fix active conversation detection, multi-VIP group chat alerts, and outgoing message debounce
+
 ## [v1.9.1](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.1) — 2026-11-01
 
 ### Highlights

@@ -240,7 +240,7 @@ def trigger_vip_desktop_alert(
         del VIP_HISTORY[25:]
         logger.info(
             f"[VIP-Alert] Displayed center-desktop alert for {clean_sender!r} on {evt['target_display']} "
-            f"(reason={trigger_reason}, rerouted={evt['rerouted_from_primary']})"
+            f"(reason={trigger_reason}, win_visible={is_win_visible}, active_conv={is_active_conversation}, rerouted={evt['rerouted_from_primary']})"
         )
         return {
             "ok": True,

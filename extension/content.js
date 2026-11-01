@@ -51,7 +51,7 @@
   const deleteQueue = [];
 
   const API_BASE = "http://127.0.0.1:8768";
-  const EXT_VERSION = "1.9.1";
+  const EXT_VERSION = "1.9.2";
 
   async function directApiFallback(type, payload = {}) {
     const routeMap = {
@@ -551,6 +551,7 @@
           timestamp: timestampText,
           age_days: ageDays !== null && ageDays !== undefined ? Number(ageDays.toFixed(2)) : null,
           non_contact: isNonContact(sender),
+          active_conv: isRowActiveConversation(r, sender),
           matched_rule: mp ? formatRuleLabel(mp) : null,
           has_menu_btn: !!btn,
           row_tag: r.tagName,
@@ -811,23 +812,76 @@
     return { sender, snippet, timestampText, ageDays };
   }
 
+  const vipPendingTimers = new Map();
+
   function isRowActiveConversation(row, cleanSender) {
-    const activeHeader = document.querySelector("[data-e2e-header-title]");
-    if (activeHeader) {
-      const activeTitle = cleanBidi(activeHeader.textContent || "");
-      if (activeTitle && activeTitle.toLowerCase() === cleanSender.toLowerCase()) {
+    // 1. Exact URL pathname match against the row's conversation link (<a href="/web/u/1/conversations/...">)
+    if (row && location.pathname && location.pathname.includes("/conversations/")) {
+      const curPath = location.pathname.replace(/\/+$/, "");
+      const links = row.querySelectorAll("a[href]");
+      for (const a of links) {
+        try {
+          const linkPath = new URL(a.getAttribute("href"), location.origin).pathname.replace(/\/+$/, "");
+          if (linkPath && linkPath === curPath) {
+            return true;
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 2. Active conversation header title match
+    const activeHeaders = document.querySelectorAll(
+      "[data-e2e-header-title], mws-conversation-header h2, mws-header h2, mws-conversation-header [role='heading']"
+    );
+    for (const h of activeHeaders) {
+      const activeTitle = cleanBidi(h.textContent || "");
+      if (activeTitle && cleanSender && activeTitle.toLowerCase() === cleanSender.toLowerCase()) {
         return true;
       }
     }
+
+    // 3. Selected/active CSS class or ARIA attributes on the row
     if (row) {
       if (
         row.classList.contains("selected") ||
-        row.querySelector(".selected, [aria-selected='true'], a.selected")
+        row.classList.contains("active") ||
+        row.getAttribute("aria-selected") === "true" ||
+        row.getAttribute("aria-current") === "page" ||
+        row.querySelector(
+          ".selected, .active, [aria-selected='true'], [aria-current='page'], a.selected, a.active, .mdc-list-item--selected, .mdc-list-item--activated"
+        )
       ) {
         return true;
       }
     }
     return false;
+  }
+
+  function isIgnoredVipSnippet(snipLower) {
+    return (
+      !snipLower ||
+      snipLower.startsWith("you:") ||
+      snipLower.startsWith("you ") ||
+      snipLower.startsWith("draft:") ||
+      snipLower.startsWith("draft ") ||
+      snipLower === "sending..." ||
+      snipLower === "sending" ||
+      snipLower.includes("is typing")
+    );
+  }
+
+  function findTriggeredVipForSnippet(matchingVips, snipLower) {
+    for (const m of matchingVips) {
+      if (m.isDirectThread) {
+        return m;
+      }
+      if (m.isGroupWithVip) {
+        if (snipLower.startsWith(m.firstNameLower + ":") || snipLower.startsWith(m.vipLower + ":")) {
+          return m;
+        }
+      }
+    }
+    return null;
   }
 
   function checkVipContactRow(row, sender, snippet, timestampText, isInitialPass) {
@@ -838,45 +892,89 @@
     const cleanSender = cleanBidi(sender);
     const cleanSnip = cleanBidi(snippet);
     const senderLower = cleanSender.toLowerCase();
-    const snipLower = cleanSnip.toLowerCase();
 
+    // Find all configured VIPs participating in this thread (1:1 or group thread)
+    const matchingVips = [];
     for (const rawVip of vips) {
       const vip = cleanBidi(rawVip);
       if (!vip) continue;
       const vipLower = vip.toLowerCase();
       const firstNameLower = vipLower.split(/\s+/)[0];
-
       const isDirectThread = senderLower === vipLower;
       const isGroupWithVip = !isDirectThread && senderLower.includes(vipLower);
-      if (!isDirectThread && !isGroupWithVip) continue;
-
-      const prevSnip = vipBaseline.get(cleanSender);
-      if (isInitialPass || prevSnip === undefined) {
-        vipBaseline.set(cleanSender, cleanSnip);
-        continue;
-      }
-
-      if (cleanSnip && cleanSnip !== prevSnip) {
-        vipBaseline.set(cleanSender, cleanSnip);
-        if (snipLower.startsWith("you:") || snipLower.startsWith("you ")) {
-          continue;
-        }
-        if (isGroupWithVip) {
-          if (!snipLower.startsWith(firstNameLower + ":") && !snipLower.startsWith(vipLower + ":")) {
-            continue;
-          }
-        }
-        const isActiveConv = isRowActiveConversation(row, cleanSender);
-        sendMsg("VIP_ALERT", {
-          sender: isDirectThread ? vip : `${vip} (${cleanSender})`,
-          thread_sender: cleanSender,
-          snippet: cleanSnip,
-          timestamp: timestampText || "",
-          page_hidden: document.hidden,
-          is_active_conversation: isActiveConv
-        });
+      if (isDirectThread || isGroupWithVip) {
+        matchingVips.push({ vip, vipLower, firstNameLower, isDirectThread, isGroupWithVip });
       }
     }
+    if (matchingVips.length === 0) return;
+
+    // Check and update the per-thread snippet baseline ONCE per row (outside the VIP loop
+    // so an earlier VIP in vip_alert_contacts never swallows another VIP's group message!)
+    const prevSnip = vipBaseline.get(cleanSender);
+    if (isInitialPass || prevSnip === undefined) {
+      vipBaseline.set(cleanSender, cleanSnip);
+      return;
+    }
+
+    if (!cleanSnip || cleanSnip === prevSnip) {
+      return;
+    }
+    vipBaseline.set(cleanSender, cleanSnip);
+
+    const initialSnipLower = cleanSnip.toLowerCase();
+    if (isIgnoredVipSnippet(initialSnipLower)) {
+      return;
+    }
+
+    // Debounce by 650ms and re-read the row's live snippet so outgoing messages synced from
+    // phone/web (which briefly render without "You: " while sending) never trigger false alerts.
+    if (vipPendingTimers.has(cleanSender)) {
+      clearTimeout(vipPendingTimers.get(cleanSender));
+    }
+    const timerId = setTimeout(() => {
+      vipPendingTimers.delete(cleanSender);
+      let latestSnip = cleanSnip;
+      let latestTs = timestampText || "";
+      let currentRow = row;
+      if (!currentRow || !currentRow.isConnected) {
+        for (const r of getConversationRows()) {
+          const info = extractRowInfo(r);
+          if (cleanBidi(info.sender) === cleanSender) {
+            currentRow = r;
+            break;
+          }
+        }
+      }
+      if (currentRow && currentRow.isConnected) {
+        const latestInfo = extractRowInfo(currentRow);
+        if (latestInfo.snippet) {
+          latestSnip = cleanBidi(latestInfo.snippet);
+          vipBaseline.set(cleanSender, latestSnip);
+        }
+        if (latestInfo.timestampText) {
+          latestTs = latestInfo.timestampText;
+        }
+      }
+
+      const latestSnipLower = latestSnip.toLowerCase();
+      if (isIgnoredVipSnippet(latestSnipLower)) {
+        return;
+      }
+
+      const triggeredVip = findTriggeredVipForSnippet(matchingVips, latestSnipLower);
+      if (!triggeredVip) return;
+
+      const isActiveConv = isRowActiveConversation(currentRow || row, cleanSender);
+      sendMsg("VIP_ALERT", {
+        sender: triggeredVip.isDirectThread ? triggeredVip.vip : `${triggeredVip.vip} (${cleanSender})`,
+        thread_sender: cleanSender,
+        snippet: latestSnip,
+        timestamp: latestTs,
+        page_hidden: document.hidden,
+        is_active_conversation: isActiveConv
+      });
+    }, 650);
+    vipPendingTimers.set(cleanSender, timerId);
   }
 
   function scanConversations() {
