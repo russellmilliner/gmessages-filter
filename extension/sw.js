@@ -43,6 +43,20 @@ async function saveStoredState(config, logs) {
   });
 }
 
+function reloadGoogleMessagesTabs() {
+  try {
+    chrome.tabs.query({ url: "https://messages.google.com/*" }, (tabs) => {
+      for (const t of tabs || []) {
+        if (t.id) chrome.tabs.reload(t.id);
+      }
+    });
+  } catch (e) {}
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  reloadGoogleMessagesTabs();
+});
+
 async function syncFromServer() {
   try {
     const resp = await fetch(`${API_BASE}/api/status`, { cache: "no-store" });
@@ -52,12 +66,8 @@ async function syncFromServer() {
         try {
           const curVer = chrome.runtime.getManifest().version;
           if (curVer && data.extension_version !== curVer) {
-            chrome.tabs.query({ url: "https://messages.google.com/*" }, (tabs) => {
-              for (const t of tabs || []) {
-                if (t.id) chrome.tabs.reload(t.id);
-              }
-              setTimeout(() => chrome.runtime.reload(), 300);
-            });
+            chrome.runtime.reload();
+            return;
           }
         } catch (e) {}
       }

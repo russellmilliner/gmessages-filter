@@ -51,9 +51,55 @@
   const deleteQueue = [];
 
   const API_BASE = "http://127.0.0.1:8768";
-  const EXT_VERSION = "1.9.2";
+  const EXT_VERSION = "1.9.3.2";
+  let reloadScheduledForInvalidContext = false;
+
+  function scheduleSafePageReloadIfIdle() {
+    if (reloadScheduledForInvalidContext) return;
+    reloadScheduledForInvalidContext = true;
+    setTimeout(() => {
+      const ae = document.activeElement;
+      const isTyping =
+        ae &&
+        (ae.tagName === "INPUT" ||
+          ae.tagName === "TEXTAREA" ||
+          ae.isContentEditable ||
+          ae.getAttribute("contenteditable") === "true");
+      if (!isTyping && !isDeleting && !isManualScanning) {
+        window.location.reload();
+      } else {
+        reloadScheduledForInvalidContext = false;
+      }
+    }, 1200);
+  }
 
   async function directApiFallback(type, payload = {}) {
+    if (type === "GET_STATE") {
+      try {
+        const r = await fetch(`${API_BASE}/api/status`, { cache: "no-store" });
+        if (r.ok) {
+          const data = await r.json();
+          if (data && data.extension_version && data.extension_version !== EXT_VERSION) {
+            scheduleSafePageReloadIfIdle();
+          }
+          if (data && data.config) {
+            return {
+              ok: true,
+              online: true,
+              config: data.config,
+              openrouter_key_configured: !!data.openrouter_key_configured,
+              ai_cache_count: data.ai_cache_count || 0,
+              logs: data.recent_logs || [],
+              ai_evals: data.recent_ai_evals || [],
+              deleted_count: data.deleted_count || 0,
+              scan_request: data.scan_request || null,
+              open_conv_request: data.open_conv_request || null
+            };
+          }
+        }
+      } catch (e) {}
+      return { ok: false };
+    }
     const routeMap = {
       EVALUATE_AI: "/api/evaluate",
       EVALUATE_POLITICAL: "/api/evaluate",
@@ -62,7 +108,13 @@
       DELETE_AI_CATEGORY: "/api/ai-categories/delete",
       VIP_ALERT: "/api/vip-alert",
       ADD_VIP_CONTACT: "/api/vip-contacts",
-      DELETE_VIP_CONTACT: "/api/vip-contacts/delete"
+      DELETE_VIP_CONTACT: "/api/vip-contacts/delete",
+      UPDATE_CONFIG: "/api/config",
+      ADD_PATTERN: "/api/patterns",
+      UPDATE_PATTERN: "/api/patterns/update",
+      DELETE_PATTERN: "/api/patterns/delete",
+      LOG_DELETION: "/api/log",
+      SEND_DEBUG: "/api/debug"
     };
     const path = routeMap[type];
     if (!path) return { ok: false };
@@ -82,8 +134,19 @@
   function sendMsg(type, payload = {}) {
     return new Promise((resolve) => {
       try {
+        if (!chrome || !chrome.runtime || !chrome.runtime.id) {
+          scheduleSafePageReloadIfIdle();
+          directApiFallback(type, payload).then(resolve);
+          return;
+        }
         chrome.runtime.sendMessage({ type, payload }, async (resp) => {
           if (chrome.runtime.lastError || !resp || !resp.ok) {
+            if (
+              chrome.runtime.lastError &&
+              String(chrome.runtime.lastError.message || "").includes("context invalidated")
+            ) {
+              scheduleSafePageReloadIfIdle();
+            }
             const fb = await directApiFallback(type, payload);
             if (fb && fb.ok) {
               resolve(fb);
@@ -95,6 +158,7 @@
           }
         });
       } catch (e) {
+        scheduleSafePageReloadIfIdle();
         directApiFallback(type, payload).then(resolve);
       }
     });
@@ -870,6 +934,25 @@
     );
   }
 
+  function getRowThreadKey(row, cleanSender) {
+    if (row) {
+      const a = row.querySelector("a[href*='/conversations/']") || row.querySelector("a[href]");
+      if (a) {
+        try {
+          const linkPath = new URL(a.getAttribute("href"), location.origin).pathname.replace(/\/+$/, "");
+          if (linkPath) {
+            return `${linkPath}::${cleanSender}`;
+          }
+        } catch (e) {}
+      }
+      const rowId = row.getAttribute("data-e2e-conversation-id") || row.id;
+      if (rowId) {
+        return `${rowId}::${cleanSender}`;
+      }
+    }
+    return cleanSender;
+  }
+
   function findTriggeredVipForSnippet(matchingVips, snipLower) {
     for (const m of matchingVips) {
       if (m.isDirectThread) {
@@ -884,6 +967,16 @@
     return null;
   }
 
+  function doesParticipantMatchVip(participantLower, vipLower, vipTokens) {
+    if (!participantLower || !vipLower) return false;
+    if (participantLower === vipLower || participantLower.includes(vipLower)) return true;
+    if (vipTokens.length >= 2) {
+      const words = participantLower.split(/[^a-z0-9]+/).filter(Boolean);
+      return vipTokens.every((t) => words.includes(t));
+    }
+    return false;
+  }
+
   function checkVipContactRow(row, sender, snippet, timestampText, isInitialPass) {
     if (!state.config || state.config.vip_alerts_enabled === false) return;
     const vips = state.config.vip_alert_contacts || [];
@@ -892,6 +985,12 @@
     const cleanSender = cleanBidi(sender);
     const cleanSnip = cleanBidi(snippet);
     const senderLower = cleanSender.toLowerCase();
+    const threadKey = getRowThreadKey(row, cleanSender);
+    const participants = senderLower
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const isMultiParticipant = participants.length > 1;
 
     // Find all configured VIPs participating in this thread (1:1 or group thread)
     const matchingVips = [];
@@ -899,27 +998,38 @@
       const vip = cleanBidi(rawVip);
       if (!vip) continue;
       const vipLower = vip.toLowerCase();
-      const firstNameLower = vipLower.split(/\s+/)[0];
-      const isDirectThread = senderLower === vipLower;
-      const isGroupWithVip = !isDirectThread && senderLower.includes(vipLower);
+      const vipTokens = vipLower.split(/[^a-z0-9]+/).filter(Boolean);
+      const firstNameLower = vipTokens[0] || vipLower;
+      const isDirectThread =
+        !isMultiParticipant && doesParticipantMatchVip(senderLower, vipLower, vipTokens);
+      const isGroupWithVip =
+        isMultiParticipant &&
+        participants.some((p) => doesParticipantMatchVip(p, vipLower, vipTokens));
       if (isDirectThread || isGroupWithVip) {
         matchingVips.push({ vip, vipLower, firstNameLower, isDirectThread, isGroupWithVip });
       }
     }
     if (matchingVips.length === 0) return;
 
-    // Check and update the per-thread snippet baseline ONCE per row (outside the VIP loop
-    // so an earlier VIP in vip_alert_contacts never swallows another VIP's group message!)
-    const prevSnip = vipBaseline.get(cleanSender);
+    // Check and update the per-thread snippet baseline ONCE per row (keyed by unique thread URL + sender
+    // so duplicate-named threads like an old 9/28/23 group thread never collide with today's thread,
+    // and outside the VIP loop so an earlier VIP in vip_alert_contacts never swallows another VIP's alert).
+    const prevSnip = vipBaseline.get(threadKey);
     if (isInitialPass || prevSnip === undefined) {
-      vipBaseline.set(cleanSender, cleanSnip);
+      vipBaseline.set(threadKey, cleanSnip);
       return;
     }
 
     if (!cleanSnip || cleanSnip === prevSnip) {
       return;
     }
-    vipBaseline.set(cleanSender, cleanSnip);
+    vipBaseline.set(threadKey, cleanSnip);
+
+    // Never fire a live VIP alert for historical threads older than ~20 minutes (e.g. "9/28/23" or "Yesterday")
+    const ageDays = parseMessageAgeDays(timestampText);
+    if (ageDays !== null && ageDays > 0.015) {
+      return;
+    }
 
     const initialSnipLower = cleanSnip.toLowerCase();
     if (isIgnoredVipSnippet(initialSnipLower)) {
@@ -928,18 +1038,18 @@
 
     // Debounce by 650ms and re-read the row's live snippet so outgoing messages synced from
     // phone/web (which briefly render without "You: " while sending) never trigger false alerts.
-    if (vipPendingTimers.has(cleanSender)) {
-      clearTimeout(vipPendingTimers.get(cleanSender));
+    if (vipPendingTimers.has(threadKey)) {
+      clearTimeout(vipPendingTimers.get(threadKey));
     }
     const timerId = setTimeout(() => {
-      vipPendingTimers.delete(cleanSender);
+      vipPendingTimers.delete(threadKey);
       let latestSnip = cleanSnip;
       let latestTs = timestampText || "";
       let currentRow = row;
       if (!currentRow || !currentRow.isConnected) {
         for (const r of getConversationRows()) {
           const info = extractRowInfo(r);
-          if (cleanBidi(info.sender) === cleanSender) {
+          if (getRowThreadKey(r, cleanBidi(info.sender)) === threadKey) {
             currentRow = r;
             break;
           }
@@ -949,10 +1059,13 @@
         const latestInfo = extractRowInfo(currentRow);
         if (latestInfo.snippet) {
           latestSnip = cleanBidi(latestInfo.snippet);
-          vipBaseline.set(cleanSender, latestSnip);
+          vipBaseline.set(threadKey, latestSnip);
         }
         if (latestInfo.timestampText) {
           latestTs = latestInfo.timestampText;
+        }
+        if (latestInfo.ageDays !== null && latestInfo.ageDays > 0.015) {
+          return;
         }
       }
 
@@ -974,10 +1087,22 @@
         is_active_conversation: isActiveConv
       });
     }, 650);
-    vipPendingTimers.set(cleanSender, timerId);
+    vipPendingTimers.set(threadKey, timerId);
   }
 
   function scanConversations() {
+    if (location.pathname && location.pathname.includes("/unableToConnect")) {
+      const btns = document.querySelectorAll("button, a, [role='button']");
+      for (const b of btns) {
+        const t = cleanBidi(b.textContent || "").toLowerCase();
+        if (t === "use here" || t.includes("use here") || t === "retry") {
+          b.click();
+          return;
+        }
+      }
+      window.location.href = location.pathname.replace(/\/unableToConnect.*$/, "/conversations");
+      return;
+    }
     if (!state.config) return;
 
     const rows = getConversationRows();

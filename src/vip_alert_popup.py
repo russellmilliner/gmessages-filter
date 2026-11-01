@@ -74,13 +74,19 @@ for (let i = 0; i < wins.length; i++) {{
 function evalWindow(gm) {{
     const gx = gm.x, gy = gm.y, gw = gm.width, gh = gm.height;
     const gArea = Math.max(1, gw * gh);
+    const gmScreenDesk = (gm.output && typeof workspace.currentDesktopForScreen === "function")
+        ? workspace.currentDesktopForScreen(gm.output)
+        : workspace.currentDesktop;
     let coveredArea = 0;
     let coveringWins = [];
     for (let i = 0; i < wins.length; i++) {{
         const o = wins[i];
         if (o === gm) continue;
         if ((o.caption || "").startsWith("GMessagesVIPAlert_")) continue;
-        const oOnCur = o.onAllDesktops || o.desktops.length === 0 || o.desktops.some(d => d.x11DesktopNumber === workspace.currentDesktop.x11DesktopNumber);
+        const oScreenDesk = (o.output && typeof workspace.currentDesktopForScreen === "function")
+            ? workspace.currentDesktopForScreen(o.output)
+            : gmScreenDesk;
+        const oOnCur = o.onAllDesktops || o.desktops.length === 0 || o.desktops.some(d => (oScreenDesk && (d.id === oScreenDesk.id || d.x11DesktopNumber === oScreenDesk.x11DesktopNumber)));
         if (o.minimized || o.hidden || !oOnCur || !o.normalWindow) continue;
         if (o.stackingOrder > gm.stackingOrder) {{
             const ix1 = Math.max(gx, o.x);
@@ -95,7 +101,7 @@ function evalWindow(gm) {{
         }}
     }}
     const coveredRatio = Math.min(1.0, coveredArea / gArea);
-    const onCurDesk = gm.onAllDesktops || gm.desktops.length === 0 || gm.desktops.some(d => d.x11DesktopNumber === workspace.currentDesktop.x11DesktopNumber);
+    const onCurDesk = gm.onAllDesktops || gm.desktops.length === 0 || gm.desktops.some(d => (gmScreenDesk && (d.id === gmScreenDesk.id || d.x11DesktopNumber === gmScreenDesk.x11DesktopNumber)));
     const isVisible = !gm.minimized && !gm.hidden && onCurDesk && coveredRatio < 0.35;
     let reason = "visible";
     if (gm.minimized) reason = "minimized";
