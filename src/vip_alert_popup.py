@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QCoreApplication, QObject, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QCoreApplication, QEventLoop, QObject, Qt, QTimer, pyqtSlot
 from PyQt6.QtDBus import QDBusConnection, QDBusInterface
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QKeySequence, QPalette, QShortcut
 from PyQt6.QtWidgets import (
@@ -34,6 +34,67 @@ from PyQt6.QtWidgets import (
 PID_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "gmessages-vip-alert.pid"
 
 
+def _run_kwin_oneshot_clean(
+    bus: QDBusConnection,
+    js_code: str,
+    plugin_name: str,
+    wait_loop: QEventLoop | None = None,
+    done_check=None,
+    timeout_ms: int = 500,
+) -> None:
+    """
+    Load and execute a temporary KWin script, optionally waiting on a QEventLoop
+    until done_check() returns True or timeout_ms elapses, and ALWAYS call
+    org.kde.kwin.Script.stop BEFORE org.kde.kwin.Scripting.unloadScript so KWin
+    Script{N} object slots are never orphaned.
+    """
+    js_path: str | None = None
+    scripting = QDBusInterface("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", bus)
+    s_iface: QDBusInterface | None = None
+    loaded = False
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(js_code)
+            js_path = f.name
+
+        is_loaded_reply = scripting.call("isScriptLoaded", plugin_name)
+        if is_loaded_reply.arguments() and bool(is_loaded_reply.arguments()[0]):
+            scripting.call("unloadScript", plugin_name)
+
+        reply = scripting.call("loadScript", js_path, plugin_name)
+        if reply.arguments():
+            script_id = int(reply.arguments()[0])
+            if script_id >= 0:
+                loaded = True
+                s_iface = QDBusInterface(
+                    "org.kde.KWin",
+                    f"/Scripting/Script{script_id}",
+                    "org.kde.kwin.Script",
+                    bus,
+                )
+                s_iface.call("run")
+                if wait_loop is not None and (done_check is None or not done_check()):
+                    QTimer.singleShot(timeout_ms, wait_loop.quit)
+                    if done_check is None or not done_check():
+                        wait_loop.exec()
+    finally:
+        try:
+            if s_iface is not None:
+                s_iface.call("stop")
+        except Exception:
+            pass
+        try:
+            if loaded:
+                scripting.call("unloadScript", plugin_name)
+        except Exception:
+            pass
+        if js_path and os.path.exists(js_path):
+            try:
+                os.unlink(js_path)
+            except OSError:
+                pass
+
+
 def check_gmessages_window_visibility() -> dict:
     """
     Query KWin via DBus Scripting to determine whether the Google Messages window
@@ -42,18 +103,19 @@ def check_gmessages_window_visibility() -> dict:
       found, visible, minimized, hidden, active, onCurrentDesktop, coveredRatio, coveringWins
     """
     app = QCoreApplication.instance()
-    created_app = False
     if app is None:
         app = QCoreApplication(sys.argv)
-        created_app = True
 
     bus = QDBusConnection.sessionBus()
     res_holder: list[str] = []
+    loop = QEventLoop()
 
     class _VisReceiver(QObject):
         @pyqtSlot(str)
         def report(self, msg: str):
             res_holder.append(msg)
+            if loop.isRunning():
+                loop.quit()
 
     recv = _VisReceiver()
     obj_path = f"/GMessagesVis_{os.getpid()}_{int(time.time() * 1000) % 100000}"
@@ -134,34 +196,20 @@ if (gmCandidates.length === 0) {{
     callDBus("{service_name}", "{obj_path}", "", "report", JSON.stringify(visWin));
 }}
 """
-    js_path = None
-    plugin = f"gmessages_vis_{os.getpid()}"
+    plugin = f"gmessages_vis_{os.getpid()}_{int(time.time() * 1000) % 100000}"
     try:
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
-            f.write(js)
-            js_path = f.name
-
-        scripting = QDBusInterface("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", bus)
-        scripting.call("unloadScript", plugin)
-        reply = scripting.call("loadScript", js_path, plugin)
-        if reply.arguments():
-            script_id = reply.arguments()[0]
-            s_iface = QDBusInterface("org.kde.KWin", f"/Scripting/Script{script_id}", "org.kde.kwin.Script", bus)
-            s_iface.call("run")
-            deadline = time.time() + 0.6
-            while not res_holder and time.time() < deadline:
-                app.processEvents()
-                time.sleep(0.01)
-        scripting.call("unloadScript", plugin)
+        _run_kwin_oneshot_clean(
+            bus,
+            js,
+            plugin,
+            wait_loop=loop,
+            done_check=lambda: bool(res_holder),
+            timeout_ms=500,
+        )
     except Exception as e:
         return {"found": False, "visible": False, "reason": f"kwin_error: {e}"}
     finally:
         bus.unregisterObject(obj_path)
-        if js_path and os.path.exists(js_path):
-            try:
-                os.unlink(js_path)
-            except OSError:
-                pass
 
     if res_holder:
         try:
@@ -304,7 +352,7 @@ def play_alert_sound():
 
 
 def activate_gmessages_window(thread_sender: str = ""):
-    """Notify the local server to focus the conversation thread and raise/activate the Google Messages window via kdotool."""
+    """Notify the local server to focus the conversation thread and raise/activate the Google Messages window via KWin DBus."""
     if thread_sender:
         try:
             import urllib.request
@@ -317,22 +365,57 @@ def activate_gmessages_window(thread_sender: str = ""):
             urllib.request.urlopen(req, timeout=1.0)
         except Exception:
             pass
-    kdotool_bin = "/home/millinr/.local/bin/kdotool"
-    if not os.path.exists(kdotool_bin):
-        kdotool_bin = "kdotool"
+
+    if QCoreApplication.instance() is None:
+        QCoreApplication(sys.argv)
+
+    js = """
+const wins = workspace.windowList();
+let target = null;
+for (let i = 0; i < wins.length; i++) {
+    const w = wins[i];
+    if ((w.caption || "").startsWith("GMessagesVIPAlert_")) continue;
+    const rc = (w.resourceClass || "").toLowerCase();
+    if (rc.includes("hpfldicfbfomlpcikngkocigghgafkph")) {
+        target = w;
+        break;
+    }
+}
+if (!target) {
+    for (let i = 0; i < wins.length; i++) {
+        const w = wins[i];
+        if ((w.caption || "").startsWith("GMessagesVIPAlert_")) continue;
+        const cap = (w.caption || "").toLowerCase();
+        if (cap.includes("google messages")) {
+            target = w;
+            break;
+        }
+    }
+}
+if (target) {
+    const targetDesk = (target.output && typeof workspace.currentDesktopForScreen === "function")
+        ? workspace.currentDesktopForScreen(target.output)
+        : workspace.currentDesktop;
+    const onCurDesk = target.onAllDesktops
+        || !target.desktops
+        || target.desktops.length === 0
+        || (targetDesk && target.desktops.some(d => d.id === targetDesk.id || d.x11DesktopNumber === targetDesk.x11DesktopNumber));
+    if (!onCurDesk && targetDesk) {
+        target.desktops = [targetDesk];
+    }
+    if (target.minimized) {
+        target.minimized = false;
+    }
+    if (typeof workspace.raiseWindow === "function") {
+        workspace.raiseWindow(target);
+    }
+    workspace.activeWindow = target;
+}
+"""
+    plugin = f"gmessages_activate_{os.getpid()}_{int(time.time() * 1000) % 100000}"
     try:
-        subprocess.run(
-            [
-                kdotool_bin,
-                "search",
-                "--class",
-                "hpfldicfbfomlpcikngkocigghgafkph",
-                "windowactivate",
-                "windowraise",
-            ],
-            timeout=2.0,
-            check=False,
-        )
+        bus = QDBusConnection.sessionBus()
+        _run_kwin_oneshot_clean(bus, js, plugin)
     except Exception:
         pass
 
@@ -345,6 +428,7 @@ class VipAlertWindow(QWidget):
         self.timestamp_str = timestamp_str or datetime.datetime.now().strftime("%-I:%M %p")
         self.primary_geom = primary_geom
         self.window_tag = f"GMessagesVIPAlert_{os.getpid()}"
+        self._kwin_centered = False
 
         self.setWindowTitle(self.window_tag)
         self.setWindowFlags(
@@ -479,6 +563,10 @@ class VipAlertWindow(QWidget):
         self.close()
 
     def center_on_primary_via_kwin(self):
+        if self._kwin_centered:
+            return
+        self._kwin_centered = True
+
         w = self.width() or self.card_width
         h = self.height() or 250
         px = self.primary_geom["x"]
@@ -506,29 +594,12 @@ for (let i = 0; i < wins.length; i++) {{
     }}
 }}
 """
-        js_path = None
         plugin = f"gmessages_move_{os.getpid()}_{int(time.time() * 1000) % 100000}"
         try:
             bus = QDBusConnection.sessionBus()
-            with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
-                f.write(js)
-                js_path = f.name
-            scripting = QDBusInterface("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", bus)
-            scripting.call("unloadScript", plugin)
-            reply = scripting.call("loadScript", js_path, plugin)
-            if reply.arguments():
-                script_id = reply.arguments()[0]
-                s_iface = QDBusInterface("org.kde.KWin", f"/Scripting/Script{script_id}", "org.kde.kwin.Script", bus)
-                s_iface.call("run")
-            scripting.call("unloadScript", plugin)
+            _run_kwin_oneshot_clean(bus, js, plugin)
         except Exception:
             pass
-        finally:
-            if js_path and os.path.exists(js_path):
-                try:
-                    os.unlink(js_path)
-                except OSError:
-                    pass
 
 
 def kill_existing_popup():
@@ -572,18 +643,24 @@ def main():
     win.adjustSize()
     win.winId()
 
-    for s in app.screens():
-        if s.name() == primary_geom["name"]:
-            if win.windowHandle():
-                win.windowHandle().setScreen(s)
-            break
+    target_screen = next((s for s in app.screens() if s.name() == primary_geom["name"]), None) or app.primaryScreen()
+    if target_screen is not None:
+        if win.windowHandle():
+            win.windowHandle().setScreen(target_screen)
+        avail = target_screen.availableGeometry()
+        if not avail.isValid():
+            avail = target_screen.geometry()
+        w_hint = win.width() or win.card_width
+        h_hint = win.height() or win.sizeHint().height() or 250
+        init_x = int(round(avail.x() + (avail.width() - w_hint) / 2))
+        init_y = int(round(avail.y() + (avail.height() - h_hint) / 2))
+        win.move(init_x, init_y)
 
     win.show()
     if not args.no_sound:
         play_alert_sound()
 
-    QTimer.singleShot(80, win.center_on_primary_via_kwin)
-    QTimer.singleShot(250, win.center_on_primary_via_kwin)
+    QTimer.singleShot(60, win.center_on_primary_via_kwin)
 
     if args.auto_close_sec and args.auto_close_sec > 0:
         QTimer.singleShot(args.auto_close_sec * 1000, app.quit)

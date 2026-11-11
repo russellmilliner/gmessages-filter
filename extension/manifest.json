@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Google Messages Auto-Filter",
-  "version": "1.9.3.2",
+  "version": "1.9.4",
   "description": "Monitors Google Messages Web and automatically deletes, blocks/reports spam, or archives messages matching caller numbers, message patterns, age rules, and multi-category OpenRouter Jev AI content evaluation (Political, Religion, etc.) from non-contacts.",
   "permissions": [
     "storage"

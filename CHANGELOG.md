@@ -2,6 +2,11 @@
 
 All notable changes to **Google Messages Web Auto-Filter** (`gmessages-filter`) will be documented in this file.
 
+## [v1.9.4](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.4) — 2026-11-10
+
+### Highlights
+- KWin Script.stop hygiene, event-driven QEventLoop wait, single-pass 60ms primary-screen centering, and zero-kdotool window activation in vip_alert_popup.py
+
 ## [v1.9.3](https://github.com/russellmilliner/gmessages-filter/releases/tag/v1.9.3) — 2026-11-01
 
 ### Fixed

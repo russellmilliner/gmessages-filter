@@ -1,6 +1,6 @@
 # Google Messages Web Auto-Filter (`gmessages-filter`)
 
-[![Version](https://img.shields.io/badge/version-1.9.3-blue.svg)](https://github.com/russellmilliner/gmessages-filter/releases)
+[![Version](https://img.shields.io/badge/version-1.9.4-blue.svg)](https://github.com/russellmilliner/gmessages-filter/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20KDE%20Plasma%206-1793d1.svg)](https://kde.org/plasma-desktop/)
 [![Browser](https://img.shields.io/badge/browser-Chromium%20PWA%20%7C%20Zen%20%7C%20Firefox-4285F4.svg)](https://messages.google.com/web)
 [![AI Router](https://img.shields.io/badge/OpenRouter-typesafe%2Fjev--router-8b5cf6.svg)](https://openrouter.ai/)

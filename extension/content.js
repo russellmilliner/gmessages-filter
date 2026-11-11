@@ -51,7 +51,7 @@
   const deleteQueue = [];
 
   const API_BASE = "http://127.0.0.1:8768";
-  const EXT_VERSION = "1.9.3.2";
+  const EXT_VERSION = "1.9.4";
   let reloadScheduledForInvalidContext = false;
 
   function scheduleSafePageReloadIfIdle() {
